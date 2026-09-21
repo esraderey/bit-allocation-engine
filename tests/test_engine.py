@@ -115,7 +115,7 @@ class TestComputeScore:
         """Score should be low when σ is small relative to μ and outliers are low."""
         profile = BlockProfile(mean=10.0, std=0.1, min_val=9.8, max_val=10.2, outlier_score=1.0)
         score = engine.compute_score(profile)
-        # R = 0.1/10 = 0.01, O = 1.0 → S = 1.0*0.01 + 0.5*1.0 = 0.51
+        # R = 0.1/max(10,0.1) = 0.1/10 = 0.01, O = 1.0 → S = 1.0*0.01 + 0.5*1.0 = 0.51
         assert score == pytest.approx(0.51, abs=0.01)
 
     def test_high_variability(self, engine: BitAllocationEngine) -> None:
@@ -140,7 +140,8 @@ class TestComputeScore:
         """When μ ≈ 0, R_i should not blow up — ε stabilises the denominator."""
         profile = BlockProfile(mean=0.0, std=1.0, min_val=-2.0, max_val=2.0, outlier_score=2.0)
         score = engine.compute_score(profile)
-        # R = 1.0 / ε ≈ 1e8, which is large but finite
+        # R = 1.0 / max(0, 1.0) = 1.0 — ε-stabilised and bounded
+        assert score == pytest.approx(1.0 * 1.0 + 0.5 * 2.0, abs=0.01)
         assert np.isfinite(score)
 
 

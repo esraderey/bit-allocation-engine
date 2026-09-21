@@ -16,6 +16,8 @@ pip install -e .
 pip install -e ".[dev]"
 ```
 
+**Requirements:** Python ≥ 3.10, NumPy ≥ 1.24
+
 ## Quick Start
 
 ```python
@@ -36,7 +38,7 @@ print(summarize_allocations(allocations))
 
 ## How It Works
 
-For each block $B_i$, the engine computes:
+For each block $B_i$, the engine runs a three-stage pipeline:
 
 ### 1. Statistical Profile
 
@@ -51,8 +53,10 @@ $$o_i = \frac{\max |B_i - \mu_i|}{\sigma_i + \epsilon}$$
 $$S_i = \alpha \cdot R_i + \beta \cdot O_i$$
 
 where:
-- $R_i = \frac{\sigma_i}{|\mu_i| + \epsilon}$ — coefficient of variation (relative variability)
+- $R_i = \frac{\sigma_i}{\max(|\mu_i|, \sigma_i) + \epsilon}$ — coefficient of variation (relative variability)
 - $O_i = o_i$ — outlier measure
+
+> **Note on numerical stability:** The denominator uses $\max(|\mu_i|, \sigma_i)$ instead of just $|\mu_i|$ to prevent $R_i$ from exploding when the mean is near zero — a common scenario with ML weight distributions. This keeps $R_i \leq 1$ for zero-centred data while preserving the original behaviour when $|\mu| \gg \sigma$.
 
 ### 3. Precision Selection
 
@@ -79,6 +83,9 @@ config = EngineConfig(
     thresholds=Thresholds(int4=1.0, int8=3.0, int16=6.0),
 )
 engine = BitAllocationEngine(config=config)
+
+# Option 3: Mix — config base + keyword overrides
+engine = BitAllocationEngine(config=config, alpha=2.0)
 ```
 
 ### Default Parameters
@@ -92,7 +99,30 @@ engine = BitAllocationEngine(config=config)
 | Threshold INT8 | `3.0` | Score above which INT8 is assigned |
 | Threshold INT16 | `6.0` | Score above which INT16 is assigned |
 
-## Analysis Utilities
+## API Reference
+
+### Core
+
+| Class / Function | Description |
+|------------------|-------------|
+| `BitAllocationEngine` | Main engine — profile, score, and allocate blocks |
+| `BitAllocationEngine.compute_profile(block)` | Compute statistical profile for a single block |
+| `BitAllocationEngine.compute_score(profile)` | Compute composite score from a profile |
+| `BitAllocationEngine.select_precision(score)` | Map a score to a `Precision` enum value |
+| `BitAllocationEngine.allocate_single(block)` | Full pipeline on one block |
+| `BitAllocationEngine.allocate(blocks)` | Full pipeline on a sequence of blocks |
+
+### Models
+
+| Class | Description |
+|-------|-------------|
+| `Precision` | Enum: `INT2`, `INT4`, `INT8`, `INT16` |
+| `BlockProfile` | Frozen dataclass: `mean`, `std`, `min_val`, `max_val`, `outlier_score` |
+| `Allocation` | Frozen dataclass: `block_id`, `profile`, `score`, `precision` |
+| `Thresholds` | Frozen dataclass: `int4`, `int8`, `int16` (must be strictly increasing) |
+| `EngineConfig` | Frozen dataclass: `alpha`, `beta`, `epsilon`, `thresholds` |
+
+### Analysis Utilities
 
 ```python
 from bit_allocation_engine import (
@@ -110,7 +140,7 @@ summary = summarize_allocations(allocations)
 
 # Compression estimate vs FP32
 ratio = estimate_compression_ratio(allocations, original_bits=32)
-# → 5.93
+# → 5.16
 
 # Find blocks needing high precision
 critical = find_critical_blocks(allocations, min_precision=Precision.INT8)
@@ -124,11 +154,33 @@ python demo.py
 
 Generates 10 synthetic blocks with varying distributions and runs the full pipeline.
 
+**Sample output:**
+
+```
+Block                  mean        std        o_i        R_i      Score  Precision
+--------------------------------------------------------------------------------------------
+  constant_like       3.1400     0.0001     1.8334     0.0000     0.9167  INT2
+  tight_gaussian    100.0009     0.0508     3.0554     0.0005     1.5282  INT4
+  moderate_gaussian   4.9380     2.0733     3.2011     0.4199     2.0204  INT4
+  wide_gaussian       0.4288    10.3284     2.7250     1.0000     2.3625  INT4
+  uniform_wide        0.4276     5.8540     1.7694     1.0000     1.8847  INT4
+  laplace            -0.0206     2.7419     5.1516     1.0000     3.5758  INT8
+  mild_outliers      -0.0471     1.6503     9.1177     1.0000     5.5589  INT8
+  severe_outliers    -0.0968    17.7058    11.3012     1.0000     6.6506  INT16
+  bimodal            -0.0322     5.0288     1.2197     1.0000     1.6098  INT4
+  zero_sparse        -0.0031     0.1422     5.7354     1.0000     3.8677  INT8
+
+  Distribution: {INT2: 1, INT4: 5, INT8: 3, INT16: 1}
+  Avg bits: 6.2 | Compression: 5.16x vs FP32
+```
+
 ## Running Tests
 
 ```bash
 pytest tests/ -v
 ```
+
+30 tests covering profiles, scores, precision selection, full pipeline, analysis utilities, and model validation.
 
 ## License
 

@@ -24,7 +24,7 @@ class BitAllocationEngine:
         Precision p_i = f(S_i) ∈ {2, 4, 8, 16}
 
     where:
-        R_i = σ_i / (|μ_i| + ε)           — coefficient of variation
+        R_i = σ_i / (max(|μ_i|, σ_i) + ε) — coefficient of variation
         O_i = max|B_i − μ_i| / (σ_i + ε)  — outlier measure
 
     Parameters
@@ -115,7 +115,7 @@ class BitAllocationEngine:
         S_i = α · R_i + β · O_i
 
         where:
-            R_i = σ_i / (|μ_i| + ε)
+            R_i = σ_i / (max(|μ_i|, σ_i) + ε)
             O_i = profile.outlier_score
 
         Parameters
@@ -128,7 +128,7 @@ class BitAllocationEngine:
         float
             The composite score.
         """
-        r_i = profile.std / (abs(profile.mean) + self._epsilon)
+        r_i = profile.std / (max(abs(profile.mean), profile.std) + self._epsilon)
         o_i = profile.outlier_score
         return self._alpha * r_i + self._beta * o_i
 

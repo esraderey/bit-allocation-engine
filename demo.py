@@ -101,7 +101,7 @@ def main() -> None:
 
     for name, alloc in zip(names, allocations):
         p = alloc.profile
-        r_i = p.std / (abs(p.mean) + engine.epsilon)
+        r_i = p.std / (max(abs(p.mean), p.std) + engine.epsilon)
         print(
             f"  {name:<20} {p.mean:>10.4f} {p.std:>10.4f} "
             f"{p.outlier_score:>10.4f} {r_i:>10.4f} {alloc.score:>10.4f}  "
