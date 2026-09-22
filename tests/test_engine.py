@@ -468,3 +468,43 @@ class TestModels:
         profile = BlockProfile(mean=1.0, std=2.0, min_val=0.0, max_val=3.0, outlier_score=1.5)
         with pytest.raises(AttributeError):
             profile.mean = 99.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Allocation num_elements validation (P2-zero-elements)
+# ---------------------------------------------------------------------------
+
+
+class TestAllocationNumElementsValidation:
+    """num_elements must be a positive integer."""
+
+    _dummy_profile = BlockProfile(mean=0, std=1, min_val=-1, max_val=1, outlier_score=1)
+
+    def test_zero_elements_raises(self) -> None:
+        with pytest.raises(ValueError, match="positive integer"):
+            Allocation(
+                block_id=0, num_elements=0,
+                profile=self._dummy_profile, score=1.0, precision=Precision.INT4,
+            )
+
+    def test_negative_elements_raises(self) -> None:
+        with pytest.raises(ValueError, match="positive integer"):
+            Allocation(
+                block_id=0, num_elements=-5,
+                profile=self._dummy_profile, score=1.0, precision=Precision.INT4,
+            )
+
+    def test_float_elements_raises(self) -> None:
+        with pytest.raises(ValueError, match="positive integer"):
+            Allocation(
+                block_id=0, num_elements=3.5,  # type: ignore[arg-type]
+                profile=self._dummy_profile, score=1.0, precision=Precision.INT4,
+            )
+
+    def test_positive_elements_ok(self) -> None:
+        alloc = Allocation(
+            block_id=0, num_elements=128,
+            profile=self._dummy_profile, score=1.0, precision=Precision.INT4,
+        )
+        assert alloc.num_elements == 128
+

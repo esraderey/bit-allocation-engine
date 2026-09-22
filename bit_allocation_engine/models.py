@@ -58,6 +58,12 @@ class Allocation:
     score: float
     precision: Precision
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.num_elements, int) or self.num_elements <= 0:
+            raise ValueError(
+                f"'num_elements' must be a positive integer, got {self.num_elements!r}"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class Thresholds:
