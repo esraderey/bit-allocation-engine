@@ -6,6 +6,7 @@ block profiles, allocation results, thresholds, and configuration.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional
@@ -45,12 +46,14 @@ class Allocation:
 
     Attributes:
         block_id:  Identifier or index of the block.
+        num_elements: Number of elements in the block.
         profile:   The computed statistical profile.
         score:     The composite score S_i = αR_i + βO_i.
         precision: The selected quantization bit-width.
     """
 
     block_id: int
+    num_elements: int
     profile: BlockProfile
     score: float
     precision: Precision
@@ -72,6 +75,9 @@ class Thresholds:
     int16: float = 6.0
 
     def __post_init__(self) -> None:
+        for name, val in (("int4", self.int4), ("int8", self.int8), ("int16", self.int16)):
+            if not math.isfinite(val):
+                raise ValueError(f"Threshold '{name}' must be finite, got {val}")
         if not (self.int4 < self.int8 < self.int16):
             raise ValueError(
                 f"Thresholds must be strictly increasing: "
@@ -94,3 +100,14 @@ class EngineConfig:
     beta: float = 0.5
     epsilon: float = 1e-8
     thresholds: Thresholds = field(default_factory=Thresholds)
+
+    def __post_init__(self) -> None:
+        for name, val in (("alpha", self.alpha), ("beta", self.beta), ("epsilon", self.epsilon)):
+            if not math.isfinite(val):
+                raise ValueError(f"'{name}' must be finite, got {val}")
+            if val < 0:
+                raise ValueError(f"'{name}' must be non-negative, got {val}")
+        if self.epsilon <= 0:
+            raise ValueError(
+                f"'epsilon' must be strictly positive, got {self.epsilon}"
+            )

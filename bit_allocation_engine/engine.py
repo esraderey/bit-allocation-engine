@@ -6,6 +6,7 @@ Implements the full pipeline:
 
 from __future__ import annotations
 
+import math
 from typing import Sequence
 
 import numpy as np
@@ -50,6 +51,17 @@ class BitAllocationEngine:
         self._epsilon = epsilon if epsilon is not None else cfg.epsilon
         self._thresholds = thresholds if thresholds is not None else cfg.thresholds
 
+        # Validate resolved values (kwargs may bypass EngineConfig validation)
+        for name, val in (("alpha", self._alpha), ("beta", self._beta), ("epsilon", self._epsilon)):
+            if not math.isfinite(val):
+                raise ValueError(f"'{name}' must be finite, got {val}")
+            if val < 0:
+                raise ValueError(f"'{name}' must be non-negative, got {val}")
+        if self._epsilon <= 0:
+            raise ValueError(
+                f"'epsilon' must be strictly positive, got {self._epsilon}"
+            )
+
     # -- public properties ---------------------------------------------------
 
     @property
@@ -86,11 +98,23 @@ class BitAllocationEngine:
         Raises
         ------
         ValueError
-            If the block is empty.
+            If the block is empty or contains non-finite values
+            (NaN or ±inf).
+
+        Notes
+        -----
+        The outlier score uses the maximum deviation from the mean.
+        For a given distribution, larger blocks tend to produce larger
+        maximum deviations (an extreme-value effect), so block size
+        may influence the assigned precision when sizes vary widely.
         """
         arr = np.asarray(block, dtype=np.float64).ravel()
         if arr.size == 0:
             raise ValueError("Block must contain at least one element.")
+        if not np.all(np.isfinite(arr)):
+            raise ValueError(
+                "Block contains non-finite values (NaN or ±inf)."
+            )
 
         mean = float(np.mean(arr))
         std = float(np.std(arr))
@@ -144,7 +168,14 @@ class BitAllocationEngine:
         -------
         Precision
             One of INT2, INT4, INT8, INT16.
+
+        Raises
+        ------
+        ValueError
+            If *score* is not finite (NaN or ±inf).
         """
+        if not math.isfinite(score):
+            raise ValueError(f"Non-finite score: {score}")
         if score < self._thresholds.int4:
             return Precision.INT2
         if score < self._thresholds.int8:
@@ -171,8 +202,13 @@ class BitAllocationEngine:
         profile = self.compute_profile(block)
         score = self.compute_score(profile)
         precision = self.select_precision(score)
+
+        # Recover element count from block (profile doesn't store it).
+        num_elements = np.asarray(block).size
+
         return Allocation(
             block_id=block_id,
+            num_elements=num_elements,
             profile=profile,
             score=score,
             precision=precision,

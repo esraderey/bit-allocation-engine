@@ -92,12 +92,14 @@ engine = BitAllocationEngine(config=config, alpha=2.0)
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `alpha` | `1.0` | Weight for relative variability $R_i$ |
-| `beta` | `0.5` | Weight for outlier score $O_i$ |
-| `epsilon` | `1e-8` | Numerical stability constant |
+| `alpha` | `1.0` | Weight for relative variability $R_i$. Must be finite and non-negative. |
+| `beta` | `0.5` | Weight for outlier score $O_i$. Must be finite and non-negative. |
+| `epsilon` | `1e-8` | Numerical stability constant. Must be strictly positive and finite. |
 | Threshold INT4 | `1.0` | Score above which INT4 is assigned |
 | Threshold INT8 | `3.0` | Score above which INT8 is assigned |
 | Threshold INT16 | `6.0` | Score above which INT16 is assigned |
+
+> **Validation:** `EngineConfig` and `Thresholds` reject non-finite values (NaN, ±inf) at construction time. Thresholds must be strictly increasing and finite. `epsilon=0` is rejected because it can cause division-by-zero on constant blocks.
 
 ## API Reference
 
@@ -118,9 +120,9 @@ engine = BitAllocationEngine(config=config, alpha=2.0)
 |-------|-------------|
 | `Precision` | Enum: `INT2`, `INT4`, `INT8`, `INT16` |
 | `BlockProfile` | Frozen dataclass: `mean`, `std`, `min_val`, `max_val`, `outlier_score` |
-| `Allocation` | Frozen dataclass: `block_id`, `profile`, `score`, `precision` |
-| `Thresholds` | Frozen dataclass: `int4`, `int8`, `int16` (must be strictly increasing) |
-| `EngineConfig` | Frozen dataclass: `alpha`, `beta`, `epsilon`, `thresholds` |
+| `Allocation` | Frozen dataclass: `block_id`, `num_elements`, `profile`, `score`, `precision` |
+| `Thresholds` | Frozen dataclass: `int4`, `int8`, `int16` (must be strictly increasing and finite) |
+| `EngineConfig` | Frozen dataclass: `alpha`, `beta`, `epsilon`, `thresholds` (validated at construction) |
 
 ### Analysis Utilities
 
@@ -134,17 +136,21 @@ from bit_allocation_engine import (
 
 allocations = engine.allocate(blocks)
 
-# Distribution summary
+# Distribution summary (avg_bits is weighted by element count per block)
 summary = summarize_allocations(allocations)
 # → {'total_blocks': 100, 'distribution': {'INT2': 20, ...}, 'avg_bits': 5.4}
 
-# Compression estimate vs FP32
+# Compression estimate vs FP32 (also element-weighted)
 ratio = estimate_compression_ratio(allocations, original_bits=32)
 # → 5.16
 
 # Find blocks needing high precision
 critical = find_critical_blocks(allocations, min_precision=Precision.INT8)
 ```
+
+> **Note:** `avg_bits` and `estimate_compression_ratio` weight each block's precision by its number of elements. This ensures a 1-element block doesn't carry the same weight as a million-element block in the final estimate.
+
+> **Input validation:** `compute_profile` rejects blocks containing NaN or ±inf with a clear `ValueError`, rather than silently propagating non-finite scores through the pipeline.
 
 ## Demo
 
@@ -180,7 +186,7 @@ Block                  mean        std        o_i        R_i      Score  Precisi
 pytest tests/ -v
 ```
 
-30 tests covering profiles, scores, precision selection, full pipeline, analysis utilities, and model validation.
+50 tests covering profiles, scores, precision selection, full pipeline, analysis utilities, model validation, element-weighted compression, NaN/inf rejection, and configuration validation.
 
 ## License
 

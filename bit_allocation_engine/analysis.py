@@ -49,7 +49,11 @@ def summarize_allocations(allocations: Sequence[Allocation]) -> dict:
     distribution_pct = {
         k: round(v / total * 100, 2) for k, v in distribution.items()
     }
-    avg_bits = sum(a.precision.value for a in allocations) / total
+    total_elements = sum(a.num_elements for a in allocations)
+    avg_bits = (
+        sum(a.precision.value * a.num_elements for a in allocations)
+        / total_elements
+    )
 
     return {
         "total_blocks": total,
@@ -80,7 +84,11 @@ def estimate_compression_ratio(
     if not allocations:
         return 1.0
 
-    avg_bits = sum(a.precision.value for a in allocations) / len(allocations)
+    total_elements = sum(a.num_elements for a in allocations)
+    avg_bits = (
+        sum(a.precision.value * a.num_elements for a in allocations)
+        / total_elements
+    )
     if avg_bits == 0:
         return float("inf")
     return round(original_bits / avg_bits, 2)

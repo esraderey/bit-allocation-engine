@@ -240,10 +240,10 @@ class TestAnalysis:
         """Create a small set of known allocations."""
         dummy_profile = BlockProfile(mean=0, std=1, min_val=-1, max_val=1, outlier_score=1)
         return [
-            Allocation(block_id=0, profile=dummy_profile, score=0.5, precision=Precision.INT2),
-            Allocation(block_id=1, profile=dummy_profile, score=1.5, precision=Precision.INT4),
-            Allocation(block_id=2, profile=dummy_profile, score=4.0, precision=Precision.INT8),
-            Allocation(block_id=3, profile=dummy_profile, score=8.0, precision=Precision.INT16),
+            Allocation(block_id=0, num_elements=256, profile=dummy_profile, score=0.5, precision=Precision.INT2),
+            Allocation(block_id=1, num_elements=256, profile=dummy_profile, score=1.5, precision=Precision.INT4),
+            Allocation(block_id=2, num_elements=256, profile=dummy_profile, score=4.0, precision=Precision.INT8),
+            Allocation(block_id=3, num_elements=256, profile=dummy_profile, score=8.0, precision=Precision.INT16),
         ]
 
     def test_summarize(self) -> None:
@@ -281,7 +281,162 @@ class TestAnalysis:
 
 
 # ---------------------------------------------------------------------------
-# Models validation
+# Weighted avg_bits / compression (P2-compression)
+# ---------------------------------------------------------------------------
+
+
+class TestWeightedCompression:
+    """Verify that avg_bits and compression ratio weight by element count."""
+
+    def test_avg_bits_weighted_by_elements(self) -> None:
+        """A large INT2 block should dominate a tiny INT16 block."""
+        dummy = BlockProfile(mean=0, std=1, min_val=-1, max_val=1, outlier_score=1)
+        allocations = [
+            Allocation(block_id=0, num_elements=1_000_000, profile=dummy, score=0.5, precision=Precision.INT2),
+            Allocation(block_id=1, num_elements=1, profile=dummy, score=8.0, precision=Precision.INT16),
+        ]
+        summary = summarize_allocations(allocations)
+        # Weighted: (2*1_000_000 + 16*1) / 1_000_001 ≈ 2.000014
+        assert summary["avg_bits"] == pytest.approx(2.0, abs=0.01)
+
+    def test_avg_bits_unweighted_would_be_wrong(self) -> None:
+        """Without weighting, avg would be (2+16)/2 = 9.0, which is wrong."""
+        dummy = BlockProfile(mean=0, std=1, min_val=-1, max_val=1, outlier_score=1)
+        allocations = [
+            Allocation(block_id=0, num_elements=1_000_000, profile=dummy, score=0.5, precision=Precision.INT2),
+            Allocation(block_id=1, num_elements=1, profile=dummy, score=8.0, precision=Precision.INT16),
+        ]
+        summary = summarize_allocations(allocations)
+        # The old (broken) average would have been 9.0
+        assert summary["avg_bits"] != pytest.approx(9.0, abs=0.1)
+
+    def test_compression_ratio_weighted(self) -> None:
+        """Compression ratio should reflect element-weighted avg_bits."""
+        dummy = BlockProfile(mean=0, std=1, min_val=-1, max_val=1, outlier_score=1)
+        allocations = [
+            Allocation(block_id=0, num_elements=1_000_000, profile=dummy, score=0.5, precision=Precision.INT2),
+            Allocation(block_id=1, num_elements=1, profile=dummy, score=8.0, precision=Precision.INT16),
+        ]
+        ratio = estimate_compression_ratio(allocations, original_bits=32)
+        # 32 / ~2.0 ≈ 16.0
+        assert ratio == pytest.approx(16.0, abs=0.1)
+
+    def test_equal_size_blocks_match_simple_average(self) -> None:
+        """When all blocks have the same size, weighted == simple average."""
+        dummy = BlockProfile(mean=0, std=1, min_val=-1, max_val=1, outlier_score=1)
+        allocations = [
+            Allocation(block_id=0, num_elements=256, profile=dummy, score=0.5, precision=Precision.INT2),
+            Allocation(block_id=1, num_elements=256, profile=dummy, score=1.5, precision=Precision.INT4),
+            Allocation(block_id=2, num_elements=256, profile=dummy, score=4.0, precision=Precision.INT8),
+            Allocation(block_id=3, num_elements=256, profile=dummy, score=8.0, precision=Precision.INT16),
+        ]
+        summary = summarize_allocations(allocations)
+        # (2+4+8+16)/4 = 7.5 — same as simple average when sizes are equal
+        assert summary["avg_bits"] == pytest.approx(7.5)
+
+
+# ---------------------------------------------------------------------------
+# Non-finite data handling (P2-NaN)
+# ---------------------------------------------------------------------------
+
+
+class TestNonFiniteHandling:
+    """Tests for NaN and ±inf rejection."""
+
+    def test_nan_in_block_raises(self, engine: BitAllocationEngine) -> None:
+        """compute_profile should reject blocks with NaN."""
+        block = np.array([1.0, 2.0, float("nan"), 4.0])
+        with pytest.raises(ValueError, match="non-finite"):
+            engine.compute_profile(block)
+
+    def test_inf_in_block_raises(self, engine: BitAllocationEngine) -> None:
+        """compute_profile should reject blocks with ±inf."""
+        block = np.array([1.0, float("inf"), 3.0])
+        with pytest.raises(ValueError, match="non-finite"):
+            engine.compute_profile(block)
+
+    def test_neg_inf_in_block_raises(self, engine: BitAllocationEngine) -> None:
+        block = np.array([1.0, float("-inf"), 3.0])
+        with pytest.raises(ValueError, match="non-finite"):
+            engine.compute_profile(block)
+
+    def test_select_precision_nan_raises(self, engine: BitAllocationEngine) -> None:
+        """select_precision should reject NaN scores."""
+        with pytest.raises(ValueError, match="Non-finite score"):
+            engine.select_precision(float("nan"))
+
+    def test_select_precision_inf_raises(self, engine: BitAllocationEngine) -> None:
+        with pytest.raises(ValueError, match="Non-finite score"):
+            engine.select_precision(float("inf"))
+
+
+# ---------------------------------------------------------------------------
+# Config validation (P2-config)
+# ---------------------------------------------------------------------------
+
+
+class TestConfigValidation:
+    """Tests for EngineConfig and Thresholds validation."""
+
+    def test_epsilon_zero_raises(self) -> None:
+        with pytest.raises(ValueError, match="epsilon.*strictly positive"):
+            EngineConfig(epsilon=0)
+
+    def test_epsilon_negative_raises(self) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            EngineConfig(epsilon=-1e-8)
+
+    def test_alpha_nan_raises(self) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            EngineConfig(alpha=float("nan"))
+
+    def test_beta_inf_raises(self) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            EngineConfig(beta=float("inf"))
+
+    def test_alpha_negative_raises(self) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            EngineConfig(alpha=-0.5)
+
+    def test_thresholds_nan_raises(self) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            Thresholds(int4=float("nan"), int8=3.0, int16=6.0)
+
+    def test_thresholds_inf_raises(self) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            Thresholds(int4=1.0, int8=float("inf"), int16=6.0)
+
+    def test_engine_kwarg_epsilon_zero_raises(self) -> None:
+        """Kwargs bypass EngineConfig — engine constructor must also validate."""
+        with pytest.raises(ValueError, match="epsilon.*strictly positive"):
+            BitAllocationEngine(epsilon=0)
+
+    def test_engine_kwarg_alpha_nan_raises(self) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            BitAllocationEngine(alpha=float("nan"))
+
+
+# ---------------------------------------------------------------------------
+# Allocation includes num_elements
+# ---------------------------------------------------------------------------
+
+
+class TestAllocationNumElements:
+    """Verify that allocate_single populates num_elements correctly."""
+
+    def test_num_elements_populated(self, engine: BitAllocationEngine) -> None:
+        block = np.random.default_rng(42).normal(0, 1, 128)
+        alloc = engine.allocate_single(block)
+        assert alloc.num_elements == 128
+
+    def test_num_elements_2d(self, engine: BitAllocationEngine) -> None:
+        block = np.ones((4, 8))
+        alloc = engine.allocate_single(block)
+        assert alloc.num_elements == 32
+
+
+# ---------------------------------------------------------------------------
+# Models validation (original tests preserved)
 # ---------------------------------------------------------------------------
 
 
