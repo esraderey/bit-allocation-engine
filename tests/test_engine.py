@@ -508,3 +508,99 @@ class TestAllocationNumElementsValidation:
         )
         assert alloc.num_elements == 128
 
+
+# ---------------------------------------------------------------------------
+# Numerical overflow in profiling (P2a)
+# ---------------------------------------------------------------------------
+
+
+class TestNumericalOverflow:
+    """compute_profile should raise on extreme-magnitude data that overflows."""
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_extreme_magnitude_block_raises(self, engine: BitAllocationEngine) -> None:
+        """Values near float64 max should trigger overflow detection."""
+        huge = np.array([1e308, -1e308, 1e307])
+        with pytest.raises(ValueError, match="Numerical overflow"):
+            engine.compute_profile(huge)
+
+    def test_large_but_safe_block_ok(self, engine: BitAllocationEngine) -> None:
+        """Large values that don't overflow should still work."""
+        block = np.array([1e100, 2e100, 3e100])
+        profile = engine.compute_profile(block)
+        assert np.isfinite(profile.mean)
+        assert np.isfinite(profile.std)
+
+    def test_large_clustered_values_ok(self, engine: BitAllocationEngine) -> None:
+        """Profiling works on large values whose spread is representable in float64.
+
+        At magnitude 1e150 the ULP is ~2.2e134, so a spread of 1e140 produces
+        three genuinely distinct values.  The profile should be finite with
+        non-zero std — unlike the previous test that used 1e200 ± 1.0 where
+        the ±1 was swallowed by float64 rounding.
+        """
+        base = 1e150
+        spread = 1e140  # >> ULP at 1e150, so representable
+        block = np.array([base - spread, base, base + spread])
+        profile = engine.compute_profile(block)
+        assert profile.mean == pytest.approx(base, rel=1e-10)
+        assert np.isfinite(profile.std)
+        assert profile.std > 0, "spread should be representable, std must not be zero"
+        assert profile.std == pytest.approx(float(np.std(block)), rel=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# estimate_compression_ratio validation (P2b)
+# ---------------------------------------------------------------------------
+
+
+class TestCompressionRatioValidation:
+    """original_bits must be a positive integer."""
+
+    _dummy_profile = BlockProfile(mean=0, std=1, min_val=-1, max_val=1, outlier_score=1)
+
+    def _allocs(self) -> list[Allocation]:
+        return [
+            Allocation(
+                block_id=0, num_elements=256,
+                profile=self._dummy_profile, score=1.0, precision=Precision.INT4,
+            )
+        ]
+
+    def test_zero_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be >= 1"):
+            estimate_compression_ratio(self._allocs(), original_bits=0)
+
+    def test_negative_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be >= 1"):
+            estimate_compression_ratio(self._allocs(), original_bits=-8)
+
+    def test_float_raises(self) -> None:
+        with pytest.raises(TypeError, match="must be an integer"):
+            estimate_compression_ratio(self._allocs(), original_bits=32.5)  # type: ignore[arg-type]
+
+    def test_valid_bits_ok(self) -> None:
+        ratio = estimate_compression_ratio(self._allocs(), original_bits=16)
+        assert ratio == pytest.approx(16 / 4, abs=0.01)
+
+    def test_one_bit_ok(self) -> None:
+        """Edge case: original_bits=1 is valid (unusual but not illegal)."""
+        ratio = estimate_compression_ratio(self._allocs(), original_bits=1)
+        assert ratio == pytest.approx(1 / 4, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Calibrate thresholds scaffold (P1)
+# ---------------------------------------------------------------------------
+
+
+class TestCalibrateThresholds:
+    """calibrate_thresholds should raise NotImplementedError (not implemented)."""
+
+    def test_raises_not_implemented(self) -> None:
+        blocks = [np.array([1.0, 2.0, 3.0])]
+        with pytest.raises(NotImplementedError, match="not implemented"):
+            BitAllocationEngine.calibrate_thresholds(
+                blocks, error_fn=lambda b, p: 0.0
+            )
+

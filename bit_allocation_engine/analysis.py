@@ -75,12 +75,29 @@ def estimate_compression_ratio(
         Results from ``BitAllocationEngine.allocate``.
     original_bits : int, optional
         Bit-width of the original representation (default FP32 = 32).
+        Must be a positive integer.
 
     Returns
     -------
     float
         Compression ratio (e.g., 4.0 means 4× smaller).
+
+    Raises
+    ------
+    TypeError
+        If *original_bits* is not an integer.
+    ValueError
+        If *original_bits* is less than 1.
     """
+    if not isinstance(original_bits, int):
+        raise TypeError(
+            f"'original_bits' must be an integer, got {type(original_bits).__name__}"
+        )
+    if original_bits < 1:
+        raise ValueError(
+            f"'original_bits' must be >= 1, got {original_bits}"
+        )
+
     if not allocations:
         return 1.0
 

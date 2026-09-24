@@ -12,8 +12,11 @@ Traditional quantization approaches (like CDP) determine precision *after* proce
 # Clone or copy the project, then:
 pip install -e .
 
-# For development (includes pytest):
+# For development (includes pytest + pytest-benchmark):
 pip install -e ".[dev]"
+
+# Benchmarks only (without full dev deps):
+pip install -e ".[bench]"
 ```
 
 **Requirements:** Python ≥ 3.10, NumPy ≥ 1.24
@@ -66,6 +69,12 @@ where:
 | $1.0 \leq S < 3.0$ | INT4 | Moderate variability |
 | $3.0 \leq S < 6.0$ | INT8 | High variability or moderate outliers |
 | $S \geq 6.0$ | INT16 | Severe outliers, needs maximum precision |
+
+> **⚠️ Heuristic thresholds — not calibrated guarantees.**
+>
+> The default thresholds are hand-chosen heuristics that work well on synthetic benchmarks but have **not** been validated against real model weights. They do not define a quantization scheme and they do not bound reconstruction error (MSE, max error, etc.).
+>
+> For production use, calibrate thresholds against representative data with an explicit error budget. `BitAllocationEngine.calibrate_thresholds()` defines the intended signature for this workflow but is **not implemented** — override it with your domain-specific error function.
 
 ## Configuration
 
@@ -186,7 +195,7 @@ Block                  mean        std        o_i        R_i      Score  Precisi
 pytest tests/ -v
 ```
 
-50 tests covering profiles, scores, precision selection, full pipeline, analysis utilities, model validation, element-weighted compression, NaN/inf rejection, and configuration validation.
+65 tests covering profiles, scores, precision selection, full pipeline, analysis utilities, model validation, element-weighted compression, NaN/inf rejection, configuration validation, numerical overflow detection, input validation, and benchmarks.
 
 ## License
 

@@ -28,6 +28,28 @@ class BitAllocationEngine:
         R_i = σ_i / (max(|μ_i|, σ_i) + ε) — coefficient of variation
         O_i = max|B_i − μ_i| / (σ_i + ε)  — outlier measure
 
+    .. warning:: **Heuristic thresholds — not calibrated guarantees.**
+
+       The default score thresholds (INT4 ≥ 1.0, INT8 ≥ 3.0, INT16 ≥ 6.0) are
+       hand-chosen heuristics that work well on synthetic benchmarks but have
+       **not** been validated against real model weights.  They do not define a
+       quantization scheme and they do not bound reconstruction error (MSE,
+       max error, etc.).
+
+       For production use you should:
+
+       1. Profile representative data with :pymethod:`compute_profile` /
+          :pymethod:`compute_score`.
+       2. Quantize + dequantize at each candidate precision and measure the
+          actual reconstruction error.
+       3. Set thresholds so that the assigned precision keeps error within an
+          explicit budget.
+
+       The :pymethod:`calibrate_thresholds` method defines the intended
+       signature for this workflow but is **not implemented** — you must
+       supply the body (or subclass) with your domain-specific error
+       function.
+
     Parameters
     ----------
     config : EngineConfig, optional
@@ -98,8 +120,9 @@ class BitAllocationEngine:
         Raises
         ------
         ValueError
-            If the block is empty or contains non-finite values
-            (NaN or ±inf).
+            If the block is empty, contains non-finite values
+            (NaN or ±inf), or if intermediate statistics overflow
+            (e.g. extreme-magnitude data near float64 limits).
 
         Notes
         -----
@@ -107,6 +130,12 @@ class BitAllocationEngine:
         For a given distribution, larger blocks tend to produce larger
         maximum deviations (an extreme-value effect), so block size
         may influence the assigned precision when sizes vary widely.
+
+        Numerical stability: when the input values are very large in
+        magnitude, intermediate computations (variance, deviations)
+        can overflow float64.  The implementation shifts data by the
+        mean before squaring to reduce overflow risk and raises a
+        clear ``ValueError`` if overflow still occurs.
         """
         arr = np.asarray(block, dtype=np.float64).ravel()
         if arr.size == 0:
@@ -117,13 +146,30 @@ class BitAllocationEngine:
             )
 
         mean = float(np.mean(arr))
-        std = float(np.std(arr))
         min_val = float(np.min(arr))
         max_val = float(np.max(arr))
 
+        # Shift by mean before computing std and deviations to reduce
+        # the magnitude of squared terms and avoid overflow.
+        centered = arr - mean
+        std = float(np.sqrt(np.mean(centered * centered)))
+
         # o_i = max|B_i - μ_i| / (σ_i + ε)
-        max_deviation = float(np.max(np.abs(arr - mean)))
+        max_deviation = float(np.max(np.abs(centered)))
         outlier_score = max_deviation / (std + self._epsilon)
+
+        # Guard: if any statistic overflowed despite shifting, reject the
+        # block rather than silently propagating inf/nan downstream.
+        computed = {"mean": mean, "std": std, "min_val": min_val,
+                    "max_val": max_val, "outlier_score": outlier_score}
+        non_finite = [k for k, v in computed.items() if not math.isfinite(v)]
+        if non_finite:
+            raise ValueError(
+                f"Numerical overflow while profiling block: the following "
+                f"statistics are non-finite: {', '.join(non_finite)}. "
+                f"This typically happens with extreme-magnitude data near "
+                f"float64 limits (~1.7e308)."
+            )
 
         return BlockProfile(
             mean=mean,
@@ -231,3 +277,60 @@ class BitAllocationEngine:
             self.allocate_single(block, block_id=i)
             for i, block in enumerate(blocks)
         ]
+
+    # -- calibration ---------------------------------------------------------
+
+    @classmethod
+    def calibrate_thresholds(
+        cls,
+        blocks: Sequence[ArrayLike],
+        error_fn: object,
+        *,
+        error_budget: float = 0.01,
+        alpha: float = 1.0,
+        beta: float = 0.5,
+        epsilon: float = 1e-8,
+    ) -> Thresholds:
+        """Extension point: derive score thresholds from representative data.
+
+        This method is **not implemented**.  It defines the intended
+        signature for data-driven calibration so that subclasses or
+        call-sites can follow a consistent contract.  A typical
+        implementation would:
+
+        1. Profile every block and compute its score with the given α, β, ε.
+        2. For each block, call ``error_fn(block, precision)`` to measure
+           reconstruction error at each candidate precision (INT2 … INT16).
+        3. For each precision boundary, find the score value that separates
+           blocks whose error is within ``error_budget`` at the lower
+           precision from those that are not.
+
+        Parameters
+        ----------
+        blocks : sequence of array-like
+            Representative weight / activation blocks.
+        error_fn : callable
+            ``error_fn(block, precision) -> float`` — returns the
+            reconstruction error when *block* is quantized at *precision*.
+        error_budget : float
+            Maximum acceptable reconstruction error per block.
+        alpha, beta, epsilon : float
+            Engine hyper-parameters used during profiling.
+
+        Returns
+        -------
+        Thresholds
+            Data-derived thresholds ready to pass to ``EngineConfig``.
+
+        Raises
+        ------
+        NotImplementedError
+            Always — override in a subclass or monkey-patch with your
+            domain-specific logic.
+        """
+        raise NotImplementedError(
+            "calibrate_thresholds() is not implemented.  Override this "
+            "method with your domain-specific error function "
+            "(e.g. quantize → dequantize → MSE) and an explicit "
+            "error_budget.  See the docstring for the expected contract."
+        )
