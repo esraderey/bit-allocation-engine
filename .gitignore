@@ -22,6 +22,7 @@ env/
 # pytest
 .pytest_cache/
 .benchmarks/
+.hf_cache/
 
 # IDE
 .vscode/

@@ -1,0 +1,127 @@
+{
+  "model_id": "EleutherAI/pythia-410m",
+  "methodology": {
+    "tensor_filter": "Only floating-point tensors with two or more dimensions",
+    "block_size": 32768,
+    "quantization_reference": "symmetric uniform quantization, per-block absmax scale",
+    "metric_caveat": "Weight reconstruction MSE, not activation error or perplexity"
+  },
+  "weights": {
+    "considered_tensors": 98,
+    "considered_parameters": 405012480,
+    "skipped_tensors": 266,
+    "skipped_parameters": 100985048,
+    "source_dtypes": {
+      "float16": 405012480
+    }
+  },
+  "allocation": {
+    "total_blocks": 12360,
+    "blocks": {
+      "INT2": 0,
+      "INT4": 343,
+      "INT8": 11808,
+      "INT16": 209
+    },
+    "elements": {
+      "INT2": 0,
+      "INT4": 11239424,
+      "INT8": 386924544,
+      "INT16": 6848512
+    },
+    "element_percentages": {
+      "INT2": 0.0,
+      "INT4": 2.7751,
+      "INT8": 95.534,
+      "INT16": 1.6909
+    },
+    "average_bits": 8.024271844660195,
+    "ideal_payload_compression_vs_fp32": 3.9879007864488805,
+    "ideal_payload_compression_vs_source": 1.9939503932244402
+  },
+  "quantization_reference": {
+    "allocated": {
+      "mse": 1.1946336411774254e-06,
+      "relative_mse": 0.001552062023221053
+    },
+    "INT2": {
+      "mse": 0.000701643152444768,
+      "relative_mse": 0.9115712576864294
+    },
+    "INT4": {
+      "mse": 3.7031225169043857e-05,
+      "relative_mse": 0.048110781646475094
+    },
+    "INT8": {
+      "mse": 1.1780418171867268e-07,
+      "relative_mse": 0.00015305060088712893
+    },
+    "INT16": {
+      "mse": 1.769483190297054e-12,
+      "relative_mse": 2.2989036686438043e-09
+    }
+  },
+  "highest_scoring_blocks": [
+    {
+      "score": 17.724124800677576,
+      "tensor": "gpt_neox.layers.22.mlp.dense_4h_to_h.weight",
+      "start_offset": 491520,
+      "assigned_bits": 16
+    },
+    {
+      "score": 16.97153409108951,
+      "tensor": "gpt_neox.layers.3.mlp.dense_4h_to_h.weight",
+      "start_offset": 1441792,
+      "assigned_bits": 16
+    },
+    {
+      "score": 15.36158827526015,
+      "tensor": "gpt_neox.layers.1.mlp.dense_4h_to_h.weight",
+      "start_offset": 3735552,
+      "assigned_bits": 16
+    },
+    {
+      "score": 15.31908070436912,
+      "tensor": "gpt_neox.layers.8.mlp.dense_4h_to_h.weight",
+      "start_offset": 524288,
+      "assigned_bits": 16
+    },
+    {
+      "score": 14.683883085492003,
+      "tensor": "gpt_neox.layers.4.mlp.dense_4h_to_h.weight",
+      "start_offset": 1441792,
+      "assigned_bits": 16
+    },
+    {
+      "score": 14.055433615056046,
+      "tensor": "gpt_neox.layers.20.mlp.dense_4h_to_h.weight",
+      "start_offset": 491520,
+      "assigned_bits": 16
+    },
+    {
+      "score": 13.966501549688578,
+      "tensor": "gpt_neox.layers.8.mlp.dense_4h_to_h.weight",
+      "start_offset": 1441792,
+      "assigned_bits": 16
+    },
+    {
+      "score": 13.917381995584162,
+      "tensor": "gpt_neox.layers.4.mlp.dense_4h_to_h.weight",
+      "start_offset": 524288,
+      "assigned_bits": 16
+    },
+    {
+      "score": 13.873451063896402,
+      "tensor": "gpt_neox.layers.17.mlp.dense_4h_to_h.weight",
+      "start_offset": 491520,
+      "assigned_bits": 16
+    },
+    {
+      "score": 13.809460307461823,
+      "tensor": "gpt_neox.layers.23.mlp.dense_4h_to_h.weight",
+      "start_offset": 720896,
+      "assigned_bits": 16
+    }
+  ],
+  "elapsed_seconds": 27.630596199999673
+}

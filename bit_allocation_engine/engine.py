@@ -7,6 +7,8 @@ Implements the full pipeline:
 from __future__ import annotations
 
 import math
+import numbers
+import warnings
 from typing import Sequence
 
 import numpy as np
@@ -50,6 +52,20 @@ class BitAllocationEngine:
        supply the body (or subclass) with your domain-specific error
        function.
 
+    .. note:: **The score is bounded by the block size.**
+
+       Because ``R_i < 1`` and ``O_i <= sqrt(n - 1)`` for a block of ``n``
+       elements, the composite score can never exceed
+       ``alpha + beta * sqrt(n - 1)`` (see :pymethod:`max_score`).  With the
+       default configuration a block of fewer than 18 elements can never be
+       assigned INT8 and a block of fewer than 102 elements can never be
+       assigned INT16, whatever its contents.  Conversely, for a fixed
+       distribution the maximum deviation grows with ``n`` (an extreme-value
+       effect), so larger blocks drift towards higher precision.  Scores are
+       therefore only comparable between blocks of equal size:
+       :pymethod:`allocate` enforces a uniform block size and warns when a
+       precision is unreachable for that size.
+
     Parameters
     ----------
     config : EngineConfig, optional
@@ -82,6 +98,11 @@ class BitAllocationEngine:
         if self._epsilon <= 0:
             raise ValueError(
                 f"'epsilon' must be strictly positive, got {self._epsilon}"
+            )
+        if not isinstance(self._thresholds, Thresholds):
+            raise TypeError(
+                f"'thresholds' must be a Thresholds instance, "
+                f"got {type(self._thresholds).__name__}"
             )
 
     # -- public properties ---------------------------------------------------
@@ -119,25 +140,43 @@ class BitAllocationEngine:
 
         Raises
         ------
+        TypeError
+            If the block holds complex or boolean values.  Only real
+            numbers are profiled; a complex array would otherwise be
+            silently truncated to its real part.
         ValueError
-            If the block is empty, contains non-finite values
-            (NaN or ±inf), or if intermediate statistics overflow
+            If the block is a scalar (0-d), is empty, contains non-finite
+            values (NaN or ±inf), or if intermediate statistics overflow
             (e.g. extreme-magnitude data near float64 limits).
 
         Notes
         -----
-        The outlier score uses the maximum deviation from the mean.
-        For a given distribution, larger blocks tend to produce larger
-        maximum deviations (an extreme-value effect), so block size
-        may influence the assigned precision when sizes vary widely.
+        The outlier score uses the maximum deviation from the mean, so it
+        is bounded by ``sqrt(n - 1)`` and, for a given distribution, grows
+        with the block size.  See the class docstring and
+        :pymethod:`max_score`.
 
         Numerical stability: when the input values are very large in
         magnitude, intermediate computations (variance, deviations)
         can overflow float64.  The implementation shifts data by the
         mean before squaring to reduce overflow risk and raises a
-        clear ``ValueError`` if overflow still occurs.
+        clear ``ValueError`` if overflow still occurs.  At the other
+        extreme, ``epsilon`` is an absolute constant: for data whose
+        standard deviation is below roughly ``1e-5`` it stops being
+        negligible and the score is no longer scale-invariant.
         """
-        arr = np.asarray(block, dtype=np.float64).ravel()
+        raw = np.asarray(block)
+        if raw.dtype == np.bool_ or np.iscomplexobj(raw):
+            raise TypeError(
+                f"Block must contain real numbers, got dtype {raw.dtype}."
+            )
+        if raw.ndim == 0:
+            raise ValueError(
+                "Block must be an array of values, got a scalar. If you "
+                "passed a flat array to allocate(), wrap it in a list or "
+                "split it into blocks first."
+            )
+        arr = np.asarray(raw, dtype=np.float64).ravel()
         if arr.size == 0:
             raise ValueError("Block must contain at least one element.")
         if not np.all(np.isfinite(arr)):
@@ -230,6 +269,59 @@ class BitAllocationEngine:
             return Precision.INT8
         return Precision.INT16
 
+    def max_score(self, num_elements: int) -> float:
+        """Upper bound of the composite score for a block of a given size.
+
+        ``R_i < 1`` always, and ``O_i = max|B_i - μ| / (σ + ε)`` is bounded
+        by ``sqrt(n - 1)`` for the population standard deviation, so
+
+            S_i < α + β · sqrt(n − 1)
+
+        A precision whose threshold is at or above this bound can never be
+        assigned to blocks of ``num_elements`` elements.
+
+        Parameters
+        ----------
+        num_elements : int
+            Number of elements per block (must be a positive integer).
+
+        Returns
+        -------
+        float
+            The (strict) upper bound of the score.
+        """
+        if (
+            isinstance(num_elements, bool)
+            or not isinstance(num_elements, numbers.Integral)
+            or num_elements < 1
+        ):
+            raise ValueError(
+                f"'num_elements' must be a positive integer, got {num_elements!r}"
+            )
+        return self._alpha + self._beta * math.sqrt(num_elements - 1)
+
+    def _warn_if_unreachable(self, num_elements: int) -> None:
+        """Warn when the current thresholds make a precision unreachable."""
+        bound = self.max_score(num_elements)
+        unreachable = [
+            precision.name
+            for precision, threshold in (
+                (Precision.INT4, self._thresholds.int4),
+                (Precision.INT8, self._thresholds.int8),
+                (Precision.INT16, self._thresholds.int16),
+            )
+            if bound <= threshold
+        ]
+        if unreachable:
+            warnings.warn(
+                f"With blocks of {num_elements} elements the composite score "
+                f"is bounded by {bound:.3f}, so {', '.join(unreachable)} can "
+                f"never be assigned under the current thresholds. Use larger "
+                f"blocks or lower thresholds (see BitAllocationEngine.max_score).",
+                UserWarning,
+                stacklevel=3,
+            )
+
     def allocate_single(self, block: ArrayLike, block_id: int = 0) -> Allocation:
         """Run the full pipeline on a single block.
 
@@ -266,17 +358,43 @@ class BitAllocationEngine:
         Parameters
         ----------
         blocks : sequence of array-like
-            Each element is one block to profile and allocate.
+            Each element is one block to profile and allocate.  All blocks
+            must have the same number of elements, because the score is
+            bounded by (and drifts with) the block size and is only
+            comparable between blocks of equal size.
 
         Returns
         -------
         list[Allocation]
             One allocation per block, in the same order.
+
+        Raises
+        ------
+        ValueError
+            If the blocks do not all have the same number of elements.
+
+        Warns
+        -----
+        UserWarning
+            If the block size makes some precision unreachable under the
+            current thresholds (see :pymethod:`max_score`).
         """
-        return [
-            self.allocate_single(block, block_id=i)
-            for i, block in enumerate(blocks)
-        ]
+        allocations: list[Allocation] = []
+        expected: int | None = None
+        for i, block in enumerate(blocks):
+            allocation = self.allocate_single(block, block_id=i)
+            if expected is None:
+                expected = allocation.num_elements
+            elif allocation.num_elements != expected:
+                raise ValueError(
+                    f"All blocks must have the same number of elements: block 0 "
+                    f"has {expected}, block {i} has {allocation.num_elements}. "
+                    f"Scores are only comparable between blocks of equal size."
+                )
+            allocations.append(allocation)
+        if expected is not None:
+            self._warn_if_unreachable(expected)
+        return allocations
 
     # -- calibration ---------------------------------------------------------
 

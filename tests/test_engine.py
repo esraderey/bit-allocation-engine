@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -603,4 +605,142 @@ class TestCalibrateThresholds:
             BitAllocationEngine.calibrate_thresholds(
                 blocks, error_fn=lambda b, p: 0.0
             )
+
+
+# ---------------------------------------------------------------------------
+# Block-size bound on the score (audit PER-COR-001)
+# ---------------------------------------------------------------------------
+
+
+class TestBlockSizeBound:
+    """S_i < alpha + beta * sqrt(n - 1): the bound is exposed and enforced."""
+
+    def test_max_score_formula(self, engine: BitAllocationEngine) -> None:
+        assert engine.max_score(1) == pytest.approx(1.0)
+        assert engine.max_score(101) == pytest.approx(1.0 + 0.5 * 10.0)
+
+    def test_max_score_rejects_bad_sizes(self, engine: BitAllocationEngine) -> None:
+        for bad in (0, -1, 1.5, True):
+            with pytest.raises(ValueError, match="positive integer"):
+                engine.max_score(bad)
+
+    @pytest.mark.parametrize("n", [2, 16, 32, 64, 101])
+    def test_single_huge_outlier_never_exceeds_bound(
+        self, engine: BitAllocationEngine, n: int
+    ) -> None:
+        """One extreme outlier is the worst case; it still respects the bound."""
+        block = np.zeros(n)
+        block[0] = 1e6
+        alloc = engine.allocate_single(block)
+        assert alloc.score <= engine.max_score(n)
+        assert alloc.precision != Precision.INT16
+
+    def test_int16_reachable_above_bound(self, engine: BitAllocationEngine) -> None:
+        block = np.zeros(128)
+        block[0] = 1e6
+        assert engine.allocate_single(block).precision == Precision.INT16
+
+    def test_allocate_warns_when_precision_unreachable(
+        self, engine: BitAllocationEngine
+    ) -> None:
+        rng = np.random.default_rng(0)
+        blocks = [rng.normal(0, 1, 32) for _ in range(3)]
+        with pytest.warns(UserWarning, match="INT16"):
+            engine.allocate(blocks)
+
+    def test_allocate_silent_when_all_reachable(
+        self, engine: BitAllocationEngine
+    ) -> None:
+        rng = np.random.default_rng(0)
+        blocks = [rng.normal(0, 1, 256) for _ in range(3)]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            engine.allocate(blocks)
+
+    def test_allocate_rejects_mixed_sizes(self, engine: BitAllocationEngine) -> None:
+        with pytest.raises(ValueError, match="same number of elements"):
+            engine.allocate([np.ones(128), np.ones(64)])
+
+    def test_allocate_empty_sequence(self, engine: BitAllocationEngine) -> None:
+        assert engine.allocate([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Input dtype / shape rejection (audit PER-ROB-002, PER-ROB-003)
+# ---------------------------------------------------------------------------
+
+
+class TestInputTypeRejection:
+    """compute_profile only accepts real-valued, at least 1-D input."""
+
+    def test_complex_ndarray_raises(self, engine: BitAllocationEngine) -> None:
+        with pytest.raises(TypeError, match="real numbers"):
+            engine.compute_profile(np.array([1 + 100j, 2 + 0j, 3 - 50j]))
+
+    def test_complex_list_raises(self, engine: BitAllocationEngine) -> None:
+        with pytest.raises(TypeError, match="real numbers"):
+            engine.compute_profile([1 + 100j, 2, 3])
+
+    def test_bool_ndarray_raises(self, engine: BitAllocationEngine) -> None:
+        with pytest.raises(TypeError, match="real numbers"):
+            engine.compute_profile(np.array([True, False, True]))
+
+    def test_integer_block_still_accepted(self, engine: BitAllocationEngine) -> None:
+        profile = engine.compute_profile(np.array([1, 2, 3, 4]))
+        assert profile.mean == pytest.approx(2.5)
+
+    def test_scalar_block_raises(self, engine: BitAllocationEngine) -> None:
+        with pytest.raises(ValueError, match="scalar"):
+            engine.compute_profile(3.5)
+
+    def test_flat_array_to_allocate_raises(self, engine: BitAllocationEngine) -> None:
+        """A flat array is not a sequence of blocks; fail loudly."""
+        flat = np.random.default_rng(0).normal(0, 1, 100)
+        with pytest.raises(ValueError, match="scalar"):
+            engine.allocate(flat)
+
+    def test_flat_array_wrapped_is_one_block(self, engine: BitAllocationEngine) -> None:
+        flat = np.random.default_rng(0).normal(0, 1, 128)
+        allocations = engine.allocate([flat])
+        assert len(allocations) == 1
+        assert allocations[0].num_elements == 128
+
+
+# ---------------------------------------------------------------------------
+# API type validation (audit PER-ROB-005)
+# ---------------------------------------------------------------------------
+
+
+class TestApiTypeValidation:
+    """Type errors are caught at construction with a clear message."""
+
+    _profile = BlockProfile(mean=0, std=1, min_val=-1, max_val=1, outlier_score=1)
+
+    def test_numpy_integer_num_elements_accepted(self) -> None:
+        alloc = Allocation(0, np.int64(5), self._profile, 1.0, Precision.INT4)
+        assert alloc.num_elements == 5
+
+    def test_bool_num_elements_rejected(self) -> None:
+        with pytest.raises(ValueError, match="positive integer"):
+            Allocation(0, True, self._profile, 1.0, Precision.INT4)
+
+    def test_engine_thresholds_wrong_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="Thresholds"):
+            BitAllocationEngine(thresholds=(1.0, 3.0, 6.0))
+
+    def test_config_thresholds_wrong_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="Thresholds"):
+            EngineConfig(thresholds=(1.0, 3.0, 6.0))
+
+    def test_find_critical_accepts_plain_int(self) -> None:
+        allocations = [
+            Allocation(i, 4, self._profile, float(p), p)
+            for i, p in enumerate(Precision)
+        ]
+        critical = find_critical_blocks(allocations, min_precision=8)
+        assert [a.precision for a in critical] == [Precision.INT16, Precision.INT8]
+
+    def test_find_critical_rejects_unknown_width(self) -> None:
+        with pytest.raises(ValueError):
+            find_critical_blocks([], min_precision=5)
 

@@ -113,7 +113,7 @@ def estimate_compression_ratio(
 
 def find_critical_blocks(
     allocations: Sequence[Allocation],
-    min_precision: Precision = Precision.INT8,
+    min_precision: Precision | int = Precision.INT8,
 ) -> list[Allocation]:
     """Return blocks that were assigned at least ``min_precision`` bits.
 
@@ -124,14 +124,21 @@ def find_critical_blocks(
     ----------
     allocations : sequence of Allocation
         Results from ``BitAllocationEngine.allocate``.
-    min_precision : Precision, optional
-        Minimum precision to qualify as critical (default INT8).
+    min_precision : Precision or int, optional
+        Minimum precision to qualify as critical (default INT8).  A plain
+        bit-width such as ``8`` is accepted and converted to ``Precision``.
 
     Returns
     -------
     list[Allocation]
         Allocations whose precision ≥ ``min_precision``, sorted by score
         descending.
+
+    Raises
+    ------
+    ValueError
+        If *min_precision* is not one of the supported bit-widths.
     """
-    critical = [a for a in allocations if a.precision.value >= min_precision.value]
+    min_precision = Precision(min_precision)
+    critical = [a for a in allocations if a.precision >= min_precision]
     return sorted(critical, key=lambda a: a.score, reverse=True)

@@ -76,6 +76,12 @@ where:
 >
 > For production use, calibrate thresholds against representative data with an explicit error budget. `BitAllocationEngine.calibrate_thresholds()` defines the intended signature for this workflow but is **not implemented** — override it with your domain-specific error function.
 
+> **⚠️ The score is bounded by the block size.**
+>
+> Since $R_i < 1$ and $o_i \leq \sqrt{n-1}$ for a block of $n$ elements, the composite score satisfies $S_i < \alpha + \beta\sqrt{n-1}$ (exposed as `BitAllocationEngine.max_score(n)`). With the defaults, blocks of fewer than **18** elements can never be assigned INT8 and blocks of fewer than **102** elements can never be assigned INT16, whatever their contents. Conversely, for a fixed distribution the maximum deviation grows with $n$, so larger blocks drift towards higher precision (pure Gaussian noise is INT4 at $n = 256$ and INT8 at $n = 32{,}768$).
+>
+> Scores are therefore only comparable between blocks of equal size. `allocate()` raises `ValueError` if the blocks differ in size and emits a `UserWarning` when the block size makes a precision unreachable under the current thresholds. Pick one block size, calibrate the thresholds for it, and keep it fixed.
+
 ## Configuration
 
 ```python
@@ -104,9 +110,9 @@ engine = BitAllocationEngine(config=config, alpha=2.0)
 | `alpha` | `1.0` | Weight for relative variability $R_i$. Must be finite and non-negative. |
 | `beta` | `0.5` | Weight for outlier score $O_i$. Must be finite and non-negative. |
 | `epsilon` | `1e-8` | Numerical stability constant. Must be strictly positive and finite. |
-| Threshold INT4 | `1.0` | Score above which INT4 is assigned |
-| Threshold INT8 | `3.0` | Score above which INT8 is assigned |
-| Threshold INT16 | `6.0` | Score above which INT16 is assigned |
+| Threshold INT4 | `1.0` | Score at or above which INT4 is assigned |
+| Threshold INT8 | `3.0` | Score at or above which INT8 is assigned |
+| Threshold INT16 | `6.0` | Score at or above which INT16 is assigned |
 
 > **Validation:** `EngineConfig` and `Thresholds` reject non-finite values (NaN, ±inf) at construction time. Thresholds must be strictly increasing and finite. `epsilon=0` is rejected because it can cause division-by-zero on constant blocks.
 
@@ -121,7 +127,8 @@ engine = BitAllocationEngine(config=config, alpha=2.0)
 | `BitAllocationEngine.compute_score(profile)` | Compute composite score from a profile |
 | `BitAllocationEngine.select_precision(score)` | Map a score to a `Precision` enum value |
 | `BitAllocationEngine.allocate_single(block)` | Full pipeline on one block |
-| `BitAllocationEngine.allocate(blocks)` | Full pipeline on a sequence of blocks |
+| `BitAllocationEngine.allocate(blocks)` | Full pipeline on a sequence of equally sized blocks |
+| `BitAllocationEngine.max_score(n)` | Upper bound of the score for blocks of `n` elements |
 
 ### Models
 
@@ -159,7 +166,9 @@ critical = find_critical_blocks(allocations, min_precision=Precision.INT8)
 
 > **Note:** `avg_bits` and `estimate_compression_ratio` weight each block's precision by its number of elements. This ensures a 1-element block doesn't carry the same weight as a million-element block in the final estimate.
 
-> **Input validation:** `compute_profile` rejects blocks containing NaN or ±inf with a clear `ValueError`, rather than silently propagating non-finite scores through the pipeline.
+> **Input validation:** `compute_profile` rejects blocks containing NaN or ±inf with a clear `ValueError`, rather than silently propagating non-finite scores through the pipeline. It also rejects complex and boolean arrays (`TypeError`) instead of silently truncating them to real 0/1 values, and rejects 0-d scalars (`ValueError`) so that a flat array accidentally passed to `allocate()` fails loudly instead of being treated as thousands of one-element blocks.
+>
+> **Magnitude range:** `epsilon` is an absolute constant. For data whose standard deviation is below roughly `1e-5` it stops being negligible and the score is no longer scale-invariant; typical fp16/fp32 weights are far above that range.
 
 ## Demo
 
@@ -195,7 +204,31 @@ Block                  mean        std        o_i        R_i      Score  Precisi
 pytest tests/ -v
 ```
 
-65 tests covering profiles, scores, precision selection, full pipeline, analysis utilities, model validation, element-weighted compression, NaN/inf rejection, configuration validation, numerical overflow detection, input validation, and benchmarks.
+88 unit tests covering profiles, scores, precision selection, full pipeline, analysis utilities, model validation, element-weighted compression, NaN/inf rejection, configuration validation, numerical overflow detection, input dtype/shape rejection, the block-size bound on the score, and API type validation. Four additional offline tests exercise the evaluation script against synthetic safetensors checkpoints and are skipped unless the `eval` extra is installed; the optional benchmark module is skipped unless `pytest-benchmark` is installed.
+
+## Real-model evaluation
+
+The optional evaluator profiles the official `EleutherAI/pythia-410m`
+checkpoint tensor by tensor, without loading the full model into memory. It
+uses floating-point tensors with at least two dimensions and reports both the
+allocation and a simple symmetric per-block quantization MSE reference.
+
+```bash
+pip install -e ".[eval]"
+python scripts/evaluate_pythia_410m.py --block-size 32768
+```
+
+The first run downloads the checkpoint to `.hf_cache/` (ignored by Git). The
+reported MSE is for reconstructing weights only; it is not an activation,
+perplexity, or generation-quality measurement. Two reference runs are
+committed under `results/` (`pythia_410m_default.json` for the 4,096-value
+block size and `pythia_410m_blocks_32768.json`). `block_size` materially
+affects the outlier score (see the block-size bound above: at 32,768 values
+the maximum deviation of Gaussian-like weights alone pushes most blocks to
+INT8), so treat each run as a reproducible experiment for that block size
+rather than a universal configuration. Each tensor's trailing remainder is
+profiled as its own smaller block, so entries in `highest_scoring_blocks`
+are only comparable among full-size blocks.
 
 ## License
 

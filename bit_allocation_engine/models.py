@@ -7,9 +7,9 @@ block profiles, allocation results, thresholds, and configuration.
 from __future__ import annotations
 
 import math
+import numbers
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Optional
 
 
 class Precision(IntEnum):
@@ -59,7 +59,13 @@ class Allocation:
     precision: Precision
 
     def __post_init__(self) -> None:
-        if not isinstance(self.num_elements, int) or self.num_elements <= 0:
+        # numbers.Integral covers int and NumPy integer scalars; bool is
+        # excluded explicitly because it is an int subclass.
+        if (
+            isinstance(self.num_elements, bool)
+            or not isinstance(self.num_elements, numbers.Integral)
+            or self.num_elements <= 0
+        ):
             raise ValueError(
                 f"'num_elements' must be a positive integer, got {self.num_elements!r}"
             )
@@ -116,4 +122,9 @@ class EngineConfig:
         if self.epsilon <= 0:
             raise ValueError(
                 f"'epsilon' must be strictly positive, got {self.epsilon}"
+            )
+        if not isinstance(self.thresholds, Thresholds):
+            raise TypeError(
+                f"'thresholds' must be a Thresholds instance, "
+                f"got {type(self.thresholds).__name__}"
             )

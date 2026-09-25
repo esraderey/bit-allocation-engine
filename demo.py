@@ -99,7 +99,7 @@ def main() -> None:
           f"{'R_i':>10} {'Score':>10}  {'Precision'}")
     print("-" * 92)
 
-    for name, alloc in zip(names, allocations):
+    for name, alloc in zip(names, allocations, strict=True):
         p = alloc.profile
         r_i = p.std / (max(abs(p.mean), p.std) + engine.epsilon)
         print(
