@@ -7,6 +7,66 @@ y este proyecto se adhiere a [Versionado Semántico](https://semver.org/lang/es/
 
 ## [Sin publicar]
 
+### Corregido (auditoría 2026-09-28)
+
+- **Cota del score frente al redondeo** (PER-LOG-001): con σ ≫ ε, `R_i` y
+  `O_i` redondean hacia arriba y el score podía alcanzar o superar
+  `max_score(n)` (p. ej. n=101 con un pico de 1e10 recibía INT16 mientras
+  `allocate()` avisaba de que era inalcanzable). `allocate_single` acota el
+  score a `nextafter(max_score(n), 0)` y `_warn_if_unreachable` ya no avisa
+  cuando `max_score` es 0 y coincide con el umbral. Docstrings actualizados.
+  ([engine.py](bit_allocation_engine/engine.py))
+
+- **Bloques constantes** (PER-LOG-002): `np.mean` inexacto daba `std` y
+  `outlier_score` espurios (p. ej. `np.full(7, 1e12+0.3)`); ahora un bloque
+  constante devuelve `std=0` y `outlier_score=0` sin calcular la media.
+  Los bloques casi constantes (p. ej. un valor distinto en 1 ulp) también
+  tenían una `std` inflada por la misma causa; la media se refina con una
+  segunda pasada (`mean += mean(arr - mean)`). Esto puede cambiar la
+  precisión asignada a bloques cuya media es enorme frente a su `std`
+  (antes la `std` espuria dominaba el score).
+
+- **Dtypes no numéricos** (PER-ROB-003): `compute_profile` solo acepta
+  dtypes `i`, `u`, `f` y `O`; cadenas, bytes, `datetime64` y `timedelta64`
+  lanzan `TypeError` en lugar de perfilarse. En arrays `object` se valida
+  cada elemento: cadenas, `bool`/`np.bool_` y cualquier valor que no sea
+  `numbers.Real` lanzan `TypeError`. `Decimal` deja de aceptarse (no es
+  `numbers.Real`); `Fraction` y los `int`/`float` de Python o NumPy dentro
+  de un array `object` siguen aceptándose.
+
+- **Enteros mayores que `2**53`** (PER-LOG-004): `compute_profile` lanza
+  `ValueError` en vez de perder precisión al convertir a `float64`. Cubre
+  también los enteros de Python dentro de arrays `object` (una lista como
+  `[2**70, 2**70+1]` acaba en dtype `object`); en dtypes `i`/`u` la
+  comparación se hace con `int()` para no depender de la promoción a
+  `float64` de NumPy 1.x.
+
+- **Valores fuera del rango de `float64`** (fuzz en banco, 2026-09-28): un
+  `Fraction` enorme en un array `object` lanzaba `OverflowError`; ahora
+  `compute_profile` lanza `ValueError`. Caso mínimo hallado por Hypothesis.
+
+- **`original_bits` en `estimate_compression_ratio`** (PER-ROB-005): acepta
+  enteros de NumPy y rechaza `bool`.
+  ([analysis.py](bit_allocation_engine/analysis.py))
+
+- **Referencia INT2 del evaluador** (PER-LOG-006): el rango simétrico
+  restringido hace ternaria la referencia de 2 bits; se documenta en el
+  docstring, en `methodology.quantization_reference` y en el README (los
+  resultados de `results/` siguen siendo válidos, el algoritmo no cambia).
+
+- **Checkpoints BF16/FP8 en el evaluador** (PER-ROB-007): error `RuntimeError`
+  claro (tensor, archivo, dtype y remedio) para los dtypes de safetensors que
+  el backend NumPy no carga (`BF16`, `F8_E4M3`, `F8_E5M2`, `F8_E8M0`,
+  `F6_E2M3`, `F6_E3M2`, `F4`) en lugar de `TypeError: data type 'bfloat16'
+  not understood` o `AttributeError`.
+
+- **Pesos todo cero en el evaluador** (PER-ROB-008): `relative_mse` es
+  `null` en vez de lanzar `ZeroDivisionError`.
+  ([evaluate_pythia_410m.py](scripts/evaluate_pythia_410m.py))
+
+- **36 tests ancla nuevos**: 32 en `test_engine.py` y 4 en
+  `test_evaluate_script.py`.
+
 ### Corregido (auditoría 2026-09-25)
 
 - **Cota del score por tamaño de bloque hecha explícita** (PER-COR-001):

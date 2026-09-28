@@ -24,6 +24,9 @@ env/
 .benchmarks/
 .hf_cache/
 
+# Tooling artifacts
+.forja/
+
 # IDE
 .vscode/
 .idea/

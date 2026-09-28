@@ -6,6 +6,7 @@ and identifying critical blocks.
 
 from __future__ import annotations
 
+import numbers
 from collections import Counter
 from typing import Sequence
 
@@ -75,7 +76,8 @@ def estimate_compression_ratio(
         Results from ``BitAllocationEngine.allocate``.
     original_bits : int, optional
         Bit-width of the original representation (default FP32 = 32).
-        Must be a positive integer.
+        Must be a positive integer; NumPy integers are accepted and
+        ``bool`` is rejected.
 
     Returns
     -------
@@ -89,10 +91,11 @@ def estimate_compression_ratio(
     ValueError
         If *original_bits* is less than 1.
     """
-    if not isinstance(original_bits, int):
+    if isinstance(original_bits, bool) or not isinstance(original_bits, numbers.Integral):
         raise TypeError(
             f"'original_bits' must be an integer, got {type(original_bits).__name__}"
         )
+    original_bits = int(original_bits)
     if original_bits < 1:
         raise ValueError(
             f"'original_bits' must be >= 1, got {original_bits}"

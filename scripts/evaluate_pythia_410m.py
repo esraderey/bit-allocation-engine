@@ -35,11 +35,20 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from bit_allocation_engine import BitAllocationEngine, Precision
 
 MODEL_ID = "EleutherAI/pythia-410m"
+# safetensors dtypes that the NumPy backend cannot materialise.
+_NUMPY_UNSUPPORTED_DTYPES = frozenset(
+    {"BF16", "F8_E4M3", "F8_E5M2", "F8_E8M0", "F6_E2M3", "F6_E3M2", "F4"}
+)
 PRECISIONS = tuple(sorted(Precision, key=lambda precision: precision.value))
 
 
 def symmetric_quantization_sse(blocks: np.ndarray, bits: int) -> float:
-    """Return SSE after symmetric, per-row uniform quantize/dequantize."""
+    """Return SSE after symmetric, per-row uniform quantize/dequantize.
+
+    The integer range is the restricted symmetric one,
+    ``[-(2^(b-1) - 1), 2^(b-1) - 1]``, so at 2 bits the grid is ternary
+    (``{-1, 0, 1}``) and overestimates the error of a 4-level INT2 grid.
+    """
     values = np.atleast_2d(blocks)
     qmax = (1 << (bits - 1)) - 1
     max_abs = np.max(np.abs(values), axis=1, keepdims=True)
@@ -55,6 +64,14 @@ def _iter_tensors(weight_files: list[Path]):
     for weight_file in weight_files:
         with safe_open(weight_file, framework="np") as weights:
             for tensor_name in weights.keys():
+                dtype = weights.get_slice(tensor_name).get_dtype()
+                if dtype in _NUMPY_UNSUPPORTED_DTYPES:
+                    raise RuntimeError(
+                        f"Tensor '{tensor_name}' in {weight_file} has dtype "
+                        f"{dtype}, which the NumPy backend of safetensors "
+                        f"cannot load; convert the checkpoint to float16 or "
+                        f"float32."
+                    )
                 yield tensor_name, weights.get_tensor(tensor_name)
 
 
@@ -167,7 +184,10 @@ def evaluate(model_id: str, block_size: int, cache_dir: Path) -> dict:
         "methodology": {
             "tensor_filter": "Only floating-point tensors with two or more dimensions",
             "block_size": block_size,
-            "quantization_reference": "symmetric uniform quantization, per-block absmax scale",
+            "quantization_reference": (
+                "symmetric uniform quantization, per-block absmax scale, "
+                "restricted range +/-(2^(b-1)-1) (INT2 reference is ternary)"
+            ),
             "metric_caveat": "Weight reconstruction MSE, not activation error or perplexity",
         },
         "weights": {
@@ -200,7 +220,7 @@ def evaluate(model_id: str, block_size: int, cache_dir: Path) -> dict:
         "quantization_reference": {
             name: {
                 "mse": sse / considered_parameters,
-                "relative_mse": sse / sum_squares,
+                "relative_mse": sse / sum_squares if sum_squares > 0 else None,
             }
             for name, sse in sse_by_scheme.items()
         },
