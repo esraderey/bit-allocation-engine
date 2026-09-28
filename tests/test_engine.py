@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from fractions import Fraction
 
 import numpy as np
 import pytest
@@ -744,3 +745,216 @@ class TestApiTypeValidation:
         with pytest.raises(ValueError):
             find_critical_blocks([], min_precision=5)
 
+
+# ---------------------------------------------------------------------------
+# Audit 2026-09-28 anchors
+# ---------------------------------------------------------------------------
+
+
+class TestAudit20260928:
+    """Anchors for the defects confirmed in the 2026-09-28 audit."""
+
+    # -- LOG-001: score bound survives floating-point rounding ---------------
+
+    def test_score_stays_below_bound_for_huge_sigma(
+        self, engine: BitAllocationEngine
+    ) -> None:
+        block = np.r_[1e10, np.zeros(100)]
+        alloc = engine.allocate_single(block)
+        assert alloc.score < engine.max_score(101)
+        assert alloc.precision != Precision.INT16
+
+    @pytest.mark.parametrize("spike", [1e12, 1e13])
+    def test_score_below_int8_threshold_for_small_block(
+        self, engine: BitAllocationEngine, spike: float
+    ) -> None:
+        block = np.r_[spike, np.zeros(16)]
+        alloc = engine.allocate_single(block)
+        assert alloc.precision == Precision.INT4
+        assert alloc.score < 3.0
+
+    def test_moderate_spike_small_block_stays_int4(
+        self, engine: BitAllocationEngine
+    ) -> None:
+        """Control: a 1e10 spike is not affected by rounding and passed before."""
+        alloc = engine.allocate_single(np.r_[1e10, np.zeros(16)])
+        assert alloc.precision == Precision.INT4
+        assert alloc.score < 3.0
+
+    def test_zero_bound_does_not_warn_int4_unreachable(self) -> None:
+        engine = BitAllocationEngine(
+            alpha=0.0,
+            beta=0.0,
+            thresholds=Thresholds(int4=0.0, int8=1.0, int16=2.0),
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            allocations = engine.allocate([[1.0], [2.0]])
+        assert [a.precision for a in allocations] == [Precision.INT4, Precision.INT4]
+        messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
+        assert not any("INT4" in m for m in messages)
+
+    def test_score_unchanged_for_ordinary_data(
+        self, engine: BitAllocationEngine
+    ) -> None:
+        """Control: the bound only clamps, it never alters ordinary scores."""
+        block = np.random.default_rng(0).normal(0, 0.02, 256)
+        alloc = engine.allocate_single(block)
+        assert alloc.score == engine.compute_score(engine.compute_profile(block))
+
+    # -- LOG-002: constant block has zero spread -----------------------------
+
+    def test_constant_block_has_exactly_zero_spread(
+        self, engine: BitAllocationEngine
+    ) -> None:
+        profile = engine.compute_profile(np.full(7, 1e12 + 0.3))
+        assert profile.std == 0.0
+        assert profile.outlier_score == 0.0
+        assert profile.mean == 1e12 + 0.3
+
+    def test_constant_block_gets_lowest_precision(self) -> None:
+        engine = BitAllocationEngine(beta=2.5)
+        alloc = engine.allocate_single(np.full(7, 1e12 + 0.3))
+        assert alloc.precision == Precision.INT2
+
+    def test_constant_block_at_float_limit_does_not_overflow(
+        self, engine: BitAllocationEngine
+    ) -> None:
+        profile = engine.compute_profile([1e308] * 4)
+        assert profile.mean == 1e308
+        assert profile.std == 0.0
+
+    # -- ROB-003: non-numeric dtypes are rejected ----------------------------
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            ["1.5", "2", "30"],
+            np.array([b"1", b"9"]),
+            np.array([1, 2, 3], dtype="M8[s]"),
+            np.array([1, 2, 3], dtype="m8[s]"),
+        ],
+        ids=["str", "bytes", "datetime64", "timedelta64"],
+    )
+    def test_non_numeric_dtype_raises(
+        self, engine: BitAllocationEngine, block: object
+    ) -> None:
+        with pytest.raises(TypeError, match="real numbers"):
+            engine.compute_profile(block)
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            np.array([1, 2, 3], dtype=np.int32),
+            np.array([1, 2, 3], dtype=np.uint8),
+            np.array([1.0, 2.0, 3.0], dtype=np.float16),
+            [1.5, 2.5, 3.5],
+        ],
+        ids=["int32", "uint8", "float16", "float-list"],
+    )
+    def test_real_dtypes_still_accepted(
+        self, engine: BitAllocationEngine, block: object
+    ) -> None:
+        assert engine.compute_profile(block).mean == pytest.approx(
+            float(np.mean(np.asarray(block, dtype=np.float64)))
+        )
+
+    # -- LOG-004: integers beyond 2**53 are not silently collapsed -----------
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            np.array([2**53, 2**53 + 1], dtype=np.int64),
+            np.array([-(2**53) - 1, 0], dtype=np.int64),
+            np.array([2**64 - 1, 2**64 - 2], dtype=np.uint64),
+        ],
+        ids=["int64-high", "int64-low", "uint64"],
+    )
+    def test_integers_beyond_2_53_raise(
+        self, engine: BitAllocationEngine, block: np.ndarray
+    ) -> None:
+        with pytest.raises(ValueError, match=r"2\*\*53"):
+            engine.compute_profile(block)
+
+    def test_integers_at_2_53_accepted(self, engine: BitAllocationEngine) -> None:
+        profile = engine.compute_profile(np.array([2**53, 2**53 - 1], dtype=np.int64))
+        assert profile.max_val == float(2**53)
+
+    # -- ROB-005: original_bits accepts NumPy integers, rejects bool ---------
+
+    def test_original_bits_bool_rejected(self) -> None:
+        allocs = [
+            Allocation(
+                0, 256,
+                BlockProfile(mean=0, std=1, min_val=-1, max_val=1, outlier_score=1),
+                1.0, Precision.INT4,
+            )
+        ]
+        with pytest.raises(TypeError, match="must be an integer"):
+            estimate_compression_ratio(allocs, original_bits=True)
+
+    def test_original_bits_numpy_integer_accepted(self) -> None:
+        allocs = [
+            Allocation(
+                0, 256,
+                BlockProfile(mean=0, std=1, min_val=-1, max_val=1, outlier_score=1),
+                1.0, Precision.INT4,
+            )
+        ]
+        result = estimate_compression_ratio(allocs, original_bits=np.int64(32))
+        assert result == estimate_compression_ratio(allocs, original_bits=32)
+        assert type(result) is float
+
+    # -- object dtype: element-wise validation (ROB-003, LOG-004) ------------
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            np.array(["1.5", "2"], dtype=object),
+            np.array([True, False], dtype=object),
+        ],
+        ids=["object-str", "object-bool"],
+    )
+    def test_object_block_with_non_real_elements_raises(
+        self, engine: BitAllocationEngine, block: np.ndarray
+    ) -> None:
+        with pytest.raises(TypeError, match="real numbers"):
+            engine.compute_profile(block)
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            [2**70, 2**70 + 1],
+            np.array([2**60, 2**60 + 1], dtype=object),
+        ],
+        ids=["python-int-list", "object-array"],
+    )
+    def test_object_block_with_huge_integers_raises(
+        self, engine: BitAllocationEngine, block: object
+    ) -> None:
+        with pytest.raises(ValueError, match=r"2\*\*53"):
+            engine.compute_profile(block)
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            np.array([1.5, 2, 3], dtype=object),
+            [Fraction(1, 2), 1, 2],
+        ],
+        ids=["object-mixed", "fraction"],
+    )
+    def test_object_block_with_real_elements_accepted(
+        self, engine: BitAllocationEngine, block: object
+    ) -> None:
+        """Control: real numbers inside an object array are still profiled."""
+        assert engine.compute_profile(block).max_val >= 2.0
+
+    # -- LOG-002 follow-up: near-constant block ------------------------------
+
+    def test_near_constant_block_has_accurate_std(
+        self, engine: BitAllocationEngine
+    ) -> None:
+        block = np.full(1000, 1e12 + 0.3)
+        block[0] = np.nextafter(block[0], np.inf)
+        profile = engine.compute_profile(block)
+        assert profile.std == pytest.approx(3.858271638007595e-06, rel=1e-2)

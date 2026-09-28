@@ -16,6 +16,11 @@ from numpy.typing import ArrayLike
 
 from .models import Allocation, BlockProfile, EngineConfig, Precision, Thresholds
 
+_INT_RANGE_MESSAGE = (
+    "Block contains integers with magnitude above 2**53, which float64 "
+    "cannot represent exactly; cast to float or rescale the block explicitly."
+)
+
 
 class BitAllocationEngine:
     """Assigns quantization bit-widths to blocks based on cheap statistical profiles.
@@ -55,8 +60,12 @@ class BitAllocationEngine:
     .. note:: **The score is bounded by the block size.**
 
        Because ``R_i < 1`` and ``O_i <= sqrt(n - 1)`` for a block of ``n``
-       elements, the composite score can never exceed
-       ``alpha + beta * sqrt(n - 1)`` (see :pymethod:`max_score`).  With the
+       elements, the composite score is strictly below
+       ``alpha + beta * sqrt(n - 1)`` whenever that bound is positive, and
+       equals zero when it is zero (see :pymethod:`max_score`).
+       :pymethod:`allocate` and :pymethod:`allocate_single` enforce the bound
+       against floating-point rounding, which can otherwise push a raw
+       :pymethod:`compute_score` to or past it when ``sigma >> epsilon``.  With the
        default configuration a block of fewer than 18 elements can never be
        assigned INT8 and a block of fewer than 102 elements can never be
        assigned INT16, whatever its contents.  Conversely, for a fixed
@@ -141,13 +150,19 @@ class BitAllocationEngine:
         Raises
         ------
         TypeError
-            If the block holds complex or boolean values.  Only real
-            numbers are profiled; a complex array would otherwise be
+            If the block does not hold real numbers (integer, unsigned,
+            floating-point or object dtype).  Complex, boolean, string,
+            bytes and datetime/timedelta blocks are rejected, as are object
+            blocks with any element that is not a real number (e.g. strings,
+            booleans, ``Decimal``); a complex array would otherwise be
             silently truncated to its real part.
         ValueError
             If the block is a scalar (0-d), is empty, contains non-finite
-            values (NaN or ±inf), or if intermediate statistics overflow
-            (e.g. extreme-magnitude data near float64 limits).
+            values (NaN or ±inf), contains integers whose magnitude
+            exceeds 2**53 (they are not exactly representable in float64;
+            this includes Python integers inside object arrays), or if
+            intermediate statistics overflow (e.g. extreme-magnitude data
+            near float64 limits).
 
         Notes
         -----
@@ -166,7 +181,7 @@ class BitAllocationEngine:
         negligible and the score is no longer scale-invariant.
         """
         raw = np.asarray(block)
-        if raw.dtype == np.bool_ or np.iscomplexobj(raw):
+        if raw.dtype.kind not in "iufO":
             raise TypeError(
                 f"Block must contain real numbers, got dtype {raw.dtype}."
             )
@@ -176,17 +191,42 @@ class BitAllocationEngine:
                 "passed a flat array to allocate(), wrap it in a list or "
                 "split it into blocks first."
             )
+        if raw.dtype.kind == "O":
+            for item in raw.flat:
+                if isinstance(item, (bool, np.bool_)) or not isinstance(
+                    item, numbers.Real
+                ):
+                    raise TypeError(
+                        f"Block must contain real numbers, got dtype {raw.dtype}."
+                    )
+                if isinstance(item, numbers.Integral) and abs(int(item)) > 2**53:
+                    raise ValueError(_INT_RANGE_MESSAGE)
         arr = np.asarray(raw, dtype=np.float64).ravel()
         if arr.size == 0:
             raise ValueError("Block must contain at least one element.")
+        if raw.dtype.kind in "iu" and (
+            int(raw.max()) > 2**53 or int(raw.min()) < -(2**53)
+        ):
+            raise ValueError(_INT_RANGE_MESSAGE)
         if not np.all(np.isfinite(arr)):
             raise ValueError(
                 "Block contains non-finite values (NaN or ±inf)."
             )
 
-        mean = float(np.mean(arr))
         min_val = float(np.min(arr))
         max_val = float(np.max(arr))
+        if min_val == max_val:
+            # np.mean of identical values is inexact, which would yield a spurious std.
+            return BlockProfile(
+                mean=min_val,
+                std=0.0,
+                min_val=min_val,
+                max_val=max_val,
+                outlier_score=0.0,
+            )
+        mean = float(np.mean(arr))
+        # One refinement pass: np.mean is inexact for large offsets and would inflate std.
+        mean += float(np.mean(arr - mean))
 
         # Shift by mean before computing std and deviations to reduce
         # the magnitude of squared terms and avoid overflow.
@@ -277,8 +317,13 @@ class BitAllocationEngine:
 
             S_i < α + β · sqrt(n − 1)
 
-        A precision whose threshold is at or above this bound can never be
-        assigned to blocks of ``num_elements`` elements.
+        The bound is strict when it is positive; when it is zero (``α = 0`` and
+        ``n = 1``, or ``α = β = 0``) the score is exactly zero.  A precision
+        whose threshold is above the bound, or equal to a positive bound, can
+        never be assigned to blocks of ``num_elements`` elements.
+        :pymethod:`allocate` and :pymethod:`allocate_single` enforce the bound
+        against floating-point rounding; a raw :pymethod:`compute_score` may
+        reach or exceed it when ``sigma >> epsilon``.
 
         Parameters
         ----------
@@ -310,7 +355,7 @@ class BitAllocationEngine:
                 (Precision.INT8, self._thresholds.int8),
                 (Precision.INT16, self._thresholds.int16),
             )
-            if bound <= threshold
+            if threshold > bound or (threshold == bound and bound > 0)
         ]
         if unreachable:
             warnings.warn(
@@ -338,11 +383,14 @@ class BitAllocationEngine:
             The allocation result including profile, score, and precision.
         """
         profile = self.compute_profile(block)
-        score = self.compute_score(profile)
-        precision = self.select_precision(score)
-
         # Recover element count from block (profile doesn't store it).
         num_elements = np.asarray(block).size
+        score = self.compute_score(profile)
+        # Rounding can push the score onto or past the (strict) bound.
+        bound = self.max_score(num_elements)
+        if score >= bound > 0:
+            score = math.nextafter(bound, 0.0)
+        precision = self.select_precision(score)
 
         return Allocation(
             block_id=block_id,

@@ -8,6 +8,8 @@ Skipped when the ``eval`` extra (safetensors) is not installed.
 from __future__ import annotations
 
 import importlib.util
+import json
+import struct
 import sys
 import types
 from pathlib import Path
@@ -91,3 +93,54 @@ def test_allocated_sse_is_bracketed_by_extremes(evaluator, tmp_path: Path) -> No
     reference = report["quantization_reference"]
     assert reference["INT16"]["mse"] <= reference["allocated"]["mse"]
     assert reference["allocated"]["mse"] <= reference["INT2"]["mse"]
+
+
+def test_reference_documents_ternary_int2(evaluator, tmp_path: Path) -> None:
+    rng = np.random.default_rng(2)
+    _write_checkpoint(
+        tmp_path, "ternary", [{"w": rng.normal(0, 0.02, (8, 64)).astype(np.float32)}]
+    )
+
+    report = evaluator.evaluate("ternary", 128, tmp_path)
+
+    assert "ternary" in report["methodology"]["quantization_reference"]
+
+
+def test_bfloat16_checkpoint_raises_clear_error(evaluator, tmp_path: Path) -> None:
+    header = json.dumps(
+        {"w": {"dtype": "BF16", "shape": [4, 4], "data_offsets": [0, 32]}}
+    ).encode()
+    directory = tmp_path / "bf16"
+    directory.mkdir()
+    (directory / "model.safetensors").write_bytes(
+        struct.pack("<Q", len(header)) + header + b"\x00" * 32
+    )
+
+    with pytest.raises(RuntimeError, match="BF16"):
+        evaluator.evaluate("bf16", 4096, tmp_path)
+
+
+def test_all_zero_weights_do_not_divide_by_zero(evaluator, tmp_path: Path) -> None:
+    _write_checkpoint(
+        tmp_path, "zeros", [{"w": np.zeros((8, 64), dtype=np.float32)}]
+    )
+
+    report = evaluator.evaluate("zeros", 128, tmp_path)
+
+    allocated = report["quantization_reference"]["allocated"]
+    assert allocated["relative_mse"] is None
+    assert allocated["mse"] == 0.0
+
+
+def test_float8_checkpoint_raises_clear_error(evaluator, tmp_path: Path) -> None:
+    header = json.dumps(
+        {"w": {"dtype": "F8_E4M3", "shape": [4, 4], "data_offsets": [0, 16]}}
+    ).encode()
+    directory = tmp_path / "f8"
+    directory.mkdir()
+    (directory / "model.safetensors").write_bytes(
+        struct.pack("<Q", len(header)) + header + bytes(16)
+    )
+
+    with pytest.raises(RuntimeError, match="F8_E4M3"):
+        evaluator.evaluate("f8", 4096, tmp_path)

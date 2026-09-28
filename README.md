@@ -80,7 +80,7 @@ where:
 >
 > Since $R_i < 1$ and $o_i \leq \sqrt{n-1}$ for a block of $n$ elements, the composite score satisfies $S_i < \alpha + \beta\sqrt{n-1}$ (exposed as `BitAllocationEngine.max_score(n)`). With the defaults, blocks of fewer than **18** elements can never be assigned INT8 and blocks of fewer than **102** elements can never be assigned INT16, whatever their contents. Conversely, for a fixed distribution the maximum deviation grows with $n$, so larger blocks drift towards higher precision (pure Gaussian noise is INT4 at $n = 256$ and INT8 at $n = 32{,}768$).
 >
-> Scores are therefore only comparable between blocks of equal size. `allocate()` raises `ValueError` if the blocks differ in size and emits a `UserWarning` when the block size makes a precision unreachable under the current thresholds. Pick one block size, calibrate the thresholds for it, and keep it fixed.
+> Scores are therefore only comparable between blocks of equal size. `allocate()` raises `ValueError` if the blocks differ in size and emits a `UserWarning` when the block size makes a precision unreachable under the current thresholds. Pick one block size, calibrate the thresholds for it, and keep it fixed. `allocate()` and `allocate_single()` enforce the bound against floating-point rounding; a raw `compute_score()` can reach it when $\sigma \gg \epsilon$.
 
 ## Configuration
 
@@ -204,14 +204,16 @@ Block                  mean        std        o_i        R_i      Score  Precisi
 pytest tests/ -v
 ```
 
-88 unit tests covering profiles, scores, precision selection, full pipeline, analysis utilities, model validation, element-weighted compression, NaN/inf rejection, configuration validation, numerical overflow detection, input dtype/shape rejection, the block-size bound on the score, and API type validation. Four additional offline tests exercise the evaluation script against synthetic safetensors checkpoints and are skipped unless the `eval` extra is installed; the optional benchmark module is skipped unless `pytest-benchmark` is installed.
+118 unit tests covering profiles, scores, precision selection, full pipeline, analysis utilities, model validation, element-weighted compression, NaN/inf rejection, configuration validation, numerical overflow detection, input dtype/shape rejection, the block-size bound on the score, API type validation, and numerical edge cases (score bound under rounding, constant blocks, non-numeric dtypes, integers above 2**53). Eight additional offline tests exercise the evaluation script against synthetic safetensors checkpoints and are skipped unless the `eval` extra is installed; the optional benchmark module is skipped unless `pytest-benchmark` is installed.
 
 ## Real-model evaluation
 
 The optional evaluator profiles the official `EleutherAI/pythia-410m`
 checkpoint tensor by tensor, without loading the full model into memory. It
 uses floating-point tensors with at least two dimensions and reports both the
-allocation and a simple symmetric per-block quantization MSE reference.
+allocation and a simple symmetric per-block quantization MSE reference. The
+reference uses the restricted range +/-(2^(b-1)-1), so its "INT2" grid is
+ternary (levels -1, 0, 1) and overestimates the error of a 4-level INT2 grid.
 
 ```bash
 pip install -e ".[eval]"
