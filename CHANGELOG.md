@@ -41,6 +41,10 @@ y este proyecto se adhiere a [Versionado Semántico](https://semver.org/lang/es/
   comparación se hace con `int()` para no depender de la promoción a
   `float64` de NumPy 1.x.
 
+- **Valores fuera del rango de `float64`** (fuzz en banco, 2026-09-28): un
+  `Fraction` enorme en un array `object` lanzaba `OverflowError`; ahora
+  `compute_profile` lanza `ValueError`. Caso mínimo hallado por Hypothesis.
+
 - **`original_bits` en `estimate_compression_ratio`** (PER-ROB-005): acepta
   enteros de NumPy y rechaza `bool`.
   ([analysis.py](bit_allocation_engine/analysis.py))
@@ -60,7 +64,7 @@ y este proyecto se adhiere a [Versionado Semántico](https://semver.org/lang/es/
   `null` en vez de lanzar `ZeroDivisionError`.
   ([evaluate_pythia_410m.py](scripts/evaluate_pythia_410m.py))
 
-- **34 tests ancla nuevos**: 30 en `test_engine.py` y 4 en
+- **36 tests ancla nuevos**: 32 en `test_engine.py` y 4 en
   `test_evaluate_script.py`.
 
 ### Corregido (auditoría 2026-09-25)

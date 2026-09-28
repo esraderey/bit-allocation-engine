@@ -204,7 +204,7 @@ Block                  mean        std        o_i        R_i      Score  Precisi
 pytest tests/ -v
 ```
 
-118 unit tests covering profiles, scores, precision selection, full pipeline, analysis utilities, model validation, element-weighted compression, NaN/inf rejection, configuration validation, numerical overflow detection, input dtype/shape rejection, the block-size bound on the score, API type validation, and numerical edge cases (score bound under rounding, constant blocks, non-numeric dtypes, integers above 2**53). Eight additional offline tests exercise the evaluation script against synthetic safetensors checkpoints and are skipped unless the `eval` extra is installed; the optional benchmark module is skipped unless `pytest-benchmark` is installed.
+120 unit tests covering profiles, scores, precision selection, full pipeline, analysis utilities, model validation, element-weighted compression, NaN/inf rejection, configuration validation, numerical overflow detection, input dtype/shape rejection, the block-size bound on the score, API type validation, and numerical edge cases (score bound under rounding, constant blocks, non-numeric dtypes, integers above 2**53). Eight additional offline tests exercise the evaluation script against synthetic safetensors checkpoints and are skipped unless the `eval` extra is installed; the optional benchmark module is skipped unless `pytest-benchmark` is installed.
 
 ## Real-model evaluation
 

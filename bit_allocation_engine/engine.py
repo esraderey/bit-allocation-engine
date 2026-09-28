@@ -160,8 +160,9 @@ class BitAllocationEngine:
             If the block is a scalar (0-d), is empty, contains non-finite
             values (NaN or ±inf), contains integers whose magnitude
             exceeds 2**53 (they are not exactly representable in float64;
-            this includes Python integers inside object arrays), or if
-            intermediate statistics overflow (e.g. extreme-magnitude data
+            this includes Python integers inside object arrays), contains
+            values outside the float64 range (e.g. a huge ``Fraction``), or
+            if intermediate statistics overflow (e.g. extreme-magnitude data
             near float64 limits).
 
         Notes
@@ -201,7 +202,10 @@ class BitAllocationEngine:
                     )
                 if isinstance(item, numbers.Integral) and abs(int(item)) > 2**53:
                     raise ValueError(_INT_RANGE_MESSAGE)
-        arr = np.asarray(raw, dtype=np.float64).ravel()
+        try:
+            arr = np.asarray(raw, dtype=np.float64).ravel()
+        except OverflowError as exc:
+            raise ValueError("Block contains values outside the float64 range.") from exc
         if arr.size == 0:
             raise ValueError("Block must contain at least one element.")
         if raw.dtype.kind in "iu" and (

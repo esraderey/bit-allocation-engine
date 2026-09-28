@@ -958,3 +958,19 @@ class TestAudit20260928:
         block[0] = np.nextafter(block[0], np.inf)
         profile = engine.compute_profile(block)
         assert profile.std == pytest.approx(3.858271638007595e-06, rel=1e-2)
+
+    # -- Sandbox fuzz follow-up: values beyond the float64 range -------------
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            [Fraction(10**400, 1)],
+            [Fraction(-(10**400), 3), 1.0],
+        ],
+        ids=["huge-fraction", "huge-negative-fraction"],
+    )
+    def test_values_beyond_float64_range_raise_value_error(
+        self, engine: BitAllocationEngine, block: object
+    ) -> None:
+        with pytest.raises(ValueError, match="float64 range"):
+            engine.compute_profile(block)
